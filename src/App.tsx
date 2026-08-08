@@ -13,6 +13,7 @@ type Note = {
 
 type ThemeMode = 'light' | 'dark';
 type AppView = 'students' | 'studentNotes' | 'reading' | 'editing';
+type ViewState = { appView: AppView; activeStudent: string | null; activeId: string | null; editFromStudent: boolean };
 
 const STORAGE_KEY = 'teacher-notes-pwa';
 const SAMPLE_NOTES: Note[] = [
@@ -71,6 +72,36 @@ function App() {
 
   const channelRef = useRef<RealtimeChannel | null>(null);
   const editorRef = useRef<HTMLDivElement | null>(null);
+  const historyRef = useRef<ViewState[]>([{ appView: 'students', activeStudent: null, activeId: null, editFromStudent: false }]);
+
+  const navigate = useCallback((next: Partial<ViewState>) => {
+    const current = historyRef.current[historyRef.current.length - 1];
+    const newState: ViewState = { ...current, ...next };
+    historyRef.current.push(newState);
+    setAppView(newState.appView);
+    setActiveStudent(newState.activeStudent);
+    setActiveId(newState.activeId);
+    setEditFromStudent(newState.editFromStudent);
+    setSearch('');
+    window.history.pushState({}, '');
+  }, []);
+
+  const goBack = useCallback(() => { window.history.back(); }, []);
+
+  useEffect(() => {
+    const onPop = () => {
+      if (historyRef.current.length > 1) {
+        historyRef.current.pop();
+        const s = historyRef.current[historyRef.current.length - 1];
+        setAppView(s.appView);
+        setActiveStudent(s.activeStudent);
+        setActiveId(s.activeId);
+        setEditFromStudent(s.editFromStudent);
+      }
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, []);
 
   const activeNote = useMemo(() => activeId ? notes.find(n => n.id === activeId) || null : null, [notes, activeId]);
   const students = useMemo(() => Array.from(new Set(notes.map(n => n.student))).sort(), [notes]);
@@ -170,11 +201,9 @@ function App() {
       updated_at: new Date().toISOString()
     };
     setNotes(prev => [newNote, ...prev]);
-    setActiveId(newNote.id);
-    setEditFromStudent(true);
-    setAppView('editing');
+    navigate({ appView: 'editing', activeStudent: student, activeId: newNote.id, editFromStudent: true });
     showToast('Note created');
-  }, []);
+  }, [navigate]);
 
   const addStudent = useCallback(() => {
     setModalValue('');
@@ -184,9 +213,11 @@ function App() {
   const deleteNote = useCallback((id: string) => {
     if (!window.confirm('Are you sure you want to delete this note?')) return;
     setNotes(prev => prev.filter(note => note.id !== id));
-    if (activeId === id) { setActiveId(null); setAppView('studentNotes'); }
+    if (activeId === id) {
+      navigate({ appView: 'studentNotes', activeId: null, editFromStudent: false });
+    }
     showToast('Note deleted');
-  }, [activeId]);
+  }, [activeId, navigate]);
 
   const renameStudent = useCallback((oldName: string) => {
     setModalValue(oldName);
@@ -238,20 +269,20 @@ function App() {
       delete next[name];
       return next;
     });
-    if (activeStudent === name) { setActiveStudent(null); setAppView('students'); }
+    if (activeStudent === name) { navigate({ appView: 'students', activeStudent: null, activeId: null, editFromStudent: false }); }
     showToast('Student removed');
-  }, [notes, activeStudent]);
+  }, [notes, activeStudent, navigate]);
 
   const formatText = useCallback((command: string, value?: string) => {
     document.execCommand(command, false, value);
     if (editorRef.current) updateNote('content', editorRef.current.innerHTML);
   }, [updateNote]);
 
-  const handleStudentClick = useCallback((student: string) => { setActiveStudent(student); setSearch(''); setAppView('studentNotes'); }, []);
-  const handleNoteClick = useCallback((id: string) => { setActiveId(id); setSearch(''); setAppView('reading'); }, []);
-  const handleBackToStudents = useCallback(() => { setActiveStudent(null); setActiveId(null); setEditFromStudent(false); setSearch(''); setAppView('students'); }, []);
-  const handleBackToNotes = useCallback(() => { setActiveId(null); setEditFromStudent(false); setSearch(''); setAppView('studentNotes'); }, []);
-  const handleEditFromReading = useCallback(() => { setEditFromStudent(true); setAppView('editing'); }, []);
+  const handleStudentClick = useCallback((student: string) => { navigate({ activeStudent: student, appView: 'studentNotes' }); }, [navigate]);
+  const handleNoteClick = useCallback((id: string) => { navigate({ activeId: id, appView: 'reading' }); }, [navigate]);
+  const handleBackToStudents = goBack;
+  const handleBackToNotes = goBack;
+  const handleEditFromReading = useCallback(() => { navigate({ appView: 'editing', editFromStudent: true }); }, [navigate]);
 
   const renderStudentsView = () => (
     <div className="list-view">
