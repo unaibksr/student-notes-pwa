@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Moon, Search, SunMedium, Plus, Bold, Italic, Underline, ArrowLeft, Edit2, Trash2, ChevronRight, Palette } from 'lucide-react';
+import { BookOpen, Moon, Search, SunMedium, Plus, Bold, Italic, Underline, ArrowLeft, Edit2, Trash2, ChevronRight, Palette, Copy, Check } from 'lucide-react';
 import { createClient, RealtimeChannel } from '@supabase/supabase-js';
 
 type Note = {
@@ -32,6 +32,8 @@ const supabase = (SUPABASE_URL && SUPABASE_ANON_KEY) ? createClient(SUPABASE_URL
 
 const stripHtml = (html: string) => html.replace(/<[^>]*>/g, '');
 
+const FONT_LEVELS = [12, 14, 16, 20, 26];
+
 const AVATAR_COLORS = [
   { name: 'Green', value: '#22c55e' },
   { name: 'Red', value: '#ef4444' },
@@ -40,8 +42,23 @@ const AVATAR_COLORS = [
   { name: 'Pink', value: '#ec4899' },
 ];
 const COLOR_KEY = 'teacher-notes-colors';
+const THEME_KEY = 'teacher-notes-theme';
 const getStudentColor = (student: string, map: Record<string, string>) =>
   map[student] || AVATAR_COLORS[0].value;
+
+const timeAgo = (iso: string): string => {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const s = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const days = Math.floor(h / 24);
+  if (days < 7) return `${days}d ago`;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+};
 
 let supabaseSeeded = false;
 
@@ -73,6 +90,19 @@ const syncDeleteStudent = (name: string) => {
   })();
 };
 
+const syncDebounce: Record<string, ReturnType<typeof setTimeout>> = {};
+const syncUpsertDebounced = (note: Note, delay = 600) => {
+  if (!supabase) return;
+  if (syncDebounce[note.id]) clearTimeout(syncDebounce[note.id]);
+  syncDebounce[note.id] = setTimeout(() => {
+    delete syncDebounce[note.id];
+    syncUpsert(note);
+  }, delay);
+};
+const syncCancelPending = (id: string) => {
+  if (syncDebounce[id]) { clearTimeout(syncDebounce[id]); delete syncDebounce[id]; }
+};
+
 function App() {
   const [notes, setNotes] = useState<Note[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -82,10 +112,16 @@ function App() {
   const [activeStudent, setActiveStudent] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [editFromStudent, setEditFromStudent] = useState(false);
-  const [theme, setTheme] = useState<ThemeMode>('dark');
+  const [theme, setTheme] = useState<ThemeMode>(() => {
+    const saved = localStorage.getItem(THEME_KEY);
+    if (saved === 'light' || saved === 'dark') return saved;
+    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  });
   const [appView, setAppView] = useState<AppView>('students');
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [confirm, setConfirm] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
+  const [copied, setCopied] = useState(false);
   const [debouncedSearch, setDebouncedSearch] = useState(search);
   const [modal, setModal] = useState<{ mode: 'addStudent' | 'renameStudent'; oldName?: string } | null>(null);
   const [modalValue, setModalValue] = useState('');
@@ -154,7 +190,15 @@ function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (copied) {
+      const t = setTimeout(() => setCopied(false), 2000);
+      return () => clearTimeout(t);
+    }
+  }, [copied]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
@@ -224,10 +268,12 @@ function App() {
 
   const filteredNotesForStudent = useMemo(() => {
     const term = debouncedSearch.toLowerCase();
-    return studentNotes.filter(note => {
-      const haystack = `${note.title} ${stripHtml(note.content)}`.toLowerCase();
-      return haystack.includes(term);
-    });
+    return studentNotes
+      .filter(note => {
+        const haystack = `${note.title} ${stripHtml(note.content)}`.toLowerCase();
+        return haystack.includes(term);
+      })
+      .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
   }, [studentNotes, debouncedSearch]);
 
   useEffect(() => {
@@ -243,7 +289,15 @@ function App() {
       updated.language = detectLanguage(`${updated.title} ${stripHtml(updated.content)}`);
     }
     setNotes(prev => prev.map(note => (note.id === updated.id ? updated : note)));
-    syncUpsert(updated);
+    syncUpsertDebounced(updated);
+  }, [activeNote]);
+
+  const handleCopy = useCallback(async () => {
+    if (!activeNote) return;
+    try {
+      await navigator.clipboard.writeText(stripHtml(activeNote.content) || activeNote.title);
+      setCopied(true);
+    } catch { /* clipboard unavailable */ }
   }, [activeNote]);
 
   const createNote = useCallback((student: string) => {
@@ -267,13 +321,19 @@ function App() {
   }, []);
 
   const deleteNote = useCallback((id: string) => {
-    if (!window.confirm('Are you sure you want to delete this note?')) return;
-    setNotes(prev => prev.filter(note => note.id !== id));
-    syncDelete(id);
-    if (activeId === id) {
-      navigate({ appView: 'studentNotes', activeId: null, editFromStudent: false });
-    }
-    showToast('Note deleted');
+    setConfirm({
+      title: 'Delete note?',
+      message: 'This note will be permanently deleted and removed from all devices.',
+      onConfirm: () => {
+        syncCancelPending(id);
+        setNotes(prev => prev.filter(note => note.id !== id));
+        syncDelete(id);
+        if (activeId === id) {
+          navigate({ appView: 'studentNotes', activeId: null, editFromStudent: false });
+        }
+        showToast('Note deleted');
+      },
+    });
   }, [activeId, navigate]);
 
   const renameStudent = useCallback((oldName: string) => {
@@ -290,13 +350,15 @@ function App() {
       const placeholder: Note = {
         id: crypto.randomUUID(),
         student: trimmed,
-        title: 'New note',
-        content: '<p></p>',
+        title: 'Untitled note',
+        content: '<p>Write your reflection here…</p>',
         language: 'en',
         updated_at: new Date().toISOString()
       };
       setNotes(prev => prev.some(n => n.student === trimmed) ? prev : [placeholder, ...prev]);
       syncUpsert(placeholder);
+      setModal(null);
+      navigate({ appView: 'editing', activeStudent: trimmed, activeId: placeholder.id, editFromStudent: true });
       showToast(`Added ${trimmed}`);
     } else if (modal.mode === 'renameStudent' && modal.oldName) {
       const oldName = modal.oldName;
@@ -308,10 +370,10 @@ function App() {
       });
       if (activeStudent === oldName) setActiveStudent(trimmed);
       syncRenameStudent(oldName, trimmed);
+      setModal(null);
       showToast('Student renamed');
     }
-    setModal(null);
-  }, [modal, modalValue, activeStudent, notes]);
+  }, [modal, modalValue, activeStudent, notes, navigate]);
 
   const setStudentColor = useCallback((student: string, color: string) => {
     setAvatarColors(prev => ({ ...prev, [student]: color }));
@@ -319,22 +381,82 @@ function App() {
 
   const deleteStudent = useCallback((name: string) => {
     const count = notes.filter(n => n.student === name).length;
-    if (!window.confirm(`Delete ${name} and their ${count} note(s)?`)) return;
-    setNotes(prev => prev.filter(n => n.student !== name));
-    setAvatarColors(prev => {
-      const next = { ...prev };
-      delete next[name];
-      return next;
+    setConfirm({
+      title: `Delete ${name}?`,
+      message: `This will remove ${name} and their ${count} note(s) from all devices.`,
+      onConfirm: () => {
+        setNotes(prev => prev.filter(n => n.student !== name));
+        setAvatarColors(prev => {
+          const next = { ...prev };
+          delete next[name];
+          return next;
+        });
+        syncDeleteStudent(name);
+        if (activeStudent === name) { navigate({ appView: 'students', activeStudent: null, activeId: null, editFromStudent: false }); }
+        showToast('Student removed');
+      },
     });
-    syncDeleteStudent(name);
-    if (activeStudent === name) { navigate({ appView: 'students', activeStudent: null, activeId: null, editFromStudent: false }); }
-    showToast('Student removed');
   }, [notes, activeStudent, navigate]);
 
   const formatText = useCallback((command: string, value?: string) => {
     document.execCommand(command, false, value);
     if (editorRef.current) updateNote('content', editorRef.current.innerHTML);
   }, [updateNote]);
+
+  const applyFontSize = useCallback((size: number) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+      editor.focus();
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    let spans: HTMLElement[] = [];
+    try {
+      const span = document.createElement('span');
+      span.style.fontSize = `${size}px`;
+      range.surroundContents(span);
+      spans = [span];
+    } catch {
+      document.execCommand('styleWithCSS', false, 'true');
+      document.execCommand('fontSize', false, '7');
+      const markers = Array.from(editor.querySelectorAll('font[size="7"]'));
+      spans = markers.filter((m): m is HTMLElement => m instanceof HTMLElement);
+      spans.forEach(m => { m.removeAttribute('size'); m.style.fontSize = `${size}px`; });
+    }
+    updateNote('content', editor.innerHTML);
+    if (spans.length > 0) {
+      const r = document.createRange();
+      r.setStart(spans[0], 0);
+      r.setEnd(spans[spans.length - 1], spans[spans.length - 1].childNodes.length);
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+    editor.focus();
+  }, [updateNote]);
+
+  const getSelectionSize = (): number => {
+    const sel = window.getSelection();
+    let node: Node | null = sel && sel.rangeCount > 0 ? sel.anchorNode : null;
+    if (node && node.nodeType === Node.TEXT_NODE && node.parentElement) node = node.parentElement;
+    if (node instanceof Element) {
+      const s = parseFloat(window.getComputedStyle(node).fontSize);
+      if (!isNaN(s)) return s;
+    }
+    return 16;
+  };
+
+  const changeFontSize = useCallback((delta: number) => {
+    const current = getSelectionSize();
+    const next = Math.round(Math.min(48, Math.max(10, current + delta)));
+    applyFontSize(next);
+  }, [applyFontSize]);
+
+  const setFontSize = useCallback((level: number) => {
+    const size = FONT_LEVELS[level - 1] ?? 16;
+    applyFontSize(size);
+  }, [applyFontSize]);
 
   const handleStudentClick = useCallback((student: string) => { navigate({ activeStudent: student, appView: 'studentNotes' }); }, [navigate]);
   const handleNoteClick = useCallback((id: string) => { navigate({ activeId: id, appView: 'reading' }); }, [navigate]);
@@ -350,7 +472,7 @@ function App() {
           <h1>Students</h1>
         </div>
         <div className="topbar-actions">
-          <button className="icon-btn" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} title="Toggle theme">
+          <button className="icon-btn" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} title="Toggle theme" aria-label="Toggle theme">
             {theme === 'dark' ? <SunMedium size={20} /> : <Moon size={20} />}
           </button>
           <span className={`sync-status ${isOnline ? 'online' : 'offline'}`} title={isOnline ? 'Online' : 'Offline'} />
@@ -371,9 +493,9 @@ function App() {
                     <span>{count} {count === 1 ? 'note' : 'notes'}</span>
                   </div>
                   <div className="student-actions">
-                    <button className="icon-btn small" onClick={(e) => { e.stopPropagation(); setColorPickerFor(student); }} title="Change color"><Palette size={14} /></button>
-                    <button className="icon-btn small" onClick={(e) => { e.stopPropagation(); renameStudent(student); }} title="Rename"><Edit2 size={14} /></button>
-                    <button className="icon-btn small" onClick={(e) => { e.stopPropagation(); deleteStudent(student); }} title="Remove"><Trash2 size={14} /></button>
+                    <button className="icon-btn small" onClick={(e) => { e.stopPropagation(); setColorPickerFor(student); }} title="Change color" aria-label={`Change color for ${student}`}><Palette size={14} /></button>
+                    <button className="icon-btn small" onClick={(e) => { e.stopPropagation(); renameStudent(student); }} title="Rename" aria-label={`Rename ${student}`}><Edit2 size={14} /></button>
+                    <button className="icon-btn small" onClick={(e) => { e.stopPropagation(); deleteStudent(student); }} title="Remove" aria-label={`Remove ${student}`}><Trash2 size={14} /></button>
                     <ChevronRight size={18} className="student-chevron" />
                   </div>
                 </div>
@@ -410,7 +532,7 @@ function App() {
     return (
       <div className="list-view">
         <header className="reading-topbar">
-          <button className="icon-btn" onClick={handleBackToStudents} title="Back">
+          <button className="icon-btn" onClick={handleBackToStudents} title="Back" aria-label="Back">
             <ArrowLeft size={20} />
           </button>
           <div className="reading-title">
@@ -434,6 +556,7 @@ function App() {
               <div key={note.id} className="note-card" onClick={() => handleNoteClick(note.id)}>
                 <div className="note-meta">
                   <strong>{note.title}</strong>
+                  <span>{timeAgo(note.updated_at)}</span>
                 </div>
                 <p>{stripHtml(note.content)}</p>
               </div>
@@ -441,8 +564,8 @@ function App() {
             {filteredNotesForStudent.length === 0 && (
               <div className="empty-state">
                 <BookOpen size={48} strokeWidth={1} style={{ marginBottom: '1rem', opacity: 0.5 }} />
-                <p>No notes yet</p>
-                {activeStudent && (
+                <p>{search ? 'No matching notes' : 'No notes yet'}</p>
+                {!search && activeStudent && (
                   <button className="primary-btn" onClick={() => createNote(activeStudent)} style={{ marginTop: '1rem' }}>
                     <Plus size={16} /> <span>Add note</span>
                   </button>
@@ -465,10 +588,11 @@ function App() {
     if (!activeNote) return renderStudentsView();
     const date = new Date(activeNote.updated_at);
     const dateLabel = isNaN(date.getTime()) ? '' : date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+    const wordCount = stripHtml(activeNote.content).trim().split(/\s+/).filter(Boolean).length;
     return (
       <div className="reading-view-full">
         <header className="reading-topbar">
-          <button className="icon-btn" onClick={handleBackToNotes} title="Back">
+          <button className="icon-btn" onClick={handleBackToNotes} title="Back" aria-label="Back">
             <ArrowLeft size={20} />
           </button>
           <div className="reading-title">
@@ -476,10 +600,13 @@ function App() {
             <h1>{activeNote.title}</h1>
           </div>
           <div className="reading-actions">
-            <button className="icon-btn" onClick={handleEditFromReading} title="Edit">
+            <button className="icon-btn" onClick={handleCopy} title="Copy note" aria-label="Copy note">
+              {copied ? <Check size={18} /> : <Copy size={18} />}
+            </button>
+            <button className="icon-btn" onClick={handleEditFromReading} title="Edit" aria-label="Edit">
               <Edit2 size={18} />
             </button>
-            <button className="icon-btn" onClick={() => deleteNote(activeNote.id)} title="Delete">
+            <button className="icon-btn" onClick={() => deleteNote(activeNote.id)} title="Delete" aria-label="Delete">
               <Trash2 size={18} />
             </button>
           </div>
@@ -487,6 +614,10 @@ function App() {
         <main className={`reading-content ${activeNote.language === 'ur' ? 'ur' : 'en'}`}>
           <div dangerouslySetInnerHTML={{ __html: activeNote.content }} />
         </main>
+        <footer className="reading-footer">
+          <span>{wordCount} {wordCount === 1 ? 'word' : 'words'}</span>
+          {timeAgo(activeNote.updated_at) && <span>· Updated {timeAgo(activeNote.updated_at)}</span>}
+        </footer>
       </div>
     );
   };
@@ -496,7 +627,7 @@ function App() {
     return (
       <div className="editing-view">
         <header className="editing-topbar">
-          <button className="icon-btn" onClick={handleBackToNotes} title="Back">
+          <button className="icon-btn" onClick={handleBackToNotes} title="Back" aria-label="Back">
             <ArrowLeft size={20} />
           </button>
           <div className="editing-title">
@@ -504,7 +635,7 @@ function App() {
             <h1>{activeNote.title || 'Untitled note'}</h1>
           </div>
           <div className="editing-actions">
-            <button className="icon-btn" onClick={() => deleteNote(activeNote.id)} title="Delete">
+            <button className="icon-btn" onClick={() => deleteNote(activeNote.id)} title="Delete" aria-label="Delete">
               <Trash2 size={18} />
             </button>
           </div>
@@ -522,10 +653,17 @@ function App() {
             onChange={e => updateNote('title', e.target.value)}
             placeholder="Title"
           />
-          <div className="rich-toolbar">
+          <div className="rich-toolbar" onMouseDown={e => e.preventDefault()}>
             <button type="button" className="toolbar-btn" onClick={() => formatText('bold')} title="Bold"><Bold size={18} /></button>
             <button type="button" className="toolbar-btn" onClick={() => formatText('italic')} title="Italic"><Italic size={18} /></button>
             <button type="button" className="toolbar-btn" onClick={() => formatText('underline')} title="Underline"><Underline size={18} /></button>
+            <span className="toolbar-divider" />
+            <button type="button" className="toolbar-btn" onClick={() => changeFontSize(-2)} title="Decrease font size"><span className="fs-symbol fs-down">A−</span></button>
+            <button type="button" className="toolbar-btn" onClick={() => changeFontSize(2)} title="Increase font size"><span className="fs-symbol fs-up">A+</span></button>
+            <span className="toolbar-divider" />
+            {[1, 2, 3, 4, 5].map(n => (
+              <button key={n} type="button" className="toolbar-btn fs-level" onClick={() => setFontSize(n)} title={`Font size ${n}`}>{n}</button>
+            ))}
           </div>
           <div
             ref={editorRef}
@@ -592,6 +730,24 @@ function App() {
             </div>
             <div className="modal-actions">
               <button className="modal-btn" onClick={() => setColorPickerFor(null)}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirm && (
+        <div className="modal-overlay" onClick={() => setConfirm(null)}>
+          <div className="modal" onClick={e => e.stopPropagation()}>
+            <h3>{confirm.title}</h3>
+            <p className="modal-message">{confirm.message}</p>
+            <div className="modal-actions">
+              <button className="modal-btn" onClick={() => setConfirm(null)}>Cancel</button>
+              <button
+                className="modal-btn danger"
+                onClick={() => { setConfirm(null); confirm.onConfirm(); }}
+              >
+                Delete
+              </button>
             </div>
           </div>
         </div>
