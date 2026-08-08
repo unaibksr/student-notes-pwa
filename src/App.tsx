@@ -34,6 +34,83 @@ const stripHtml = (html: string) => html.replace(/<[^>]*>/g, '');
 
 const FONT_LEVELS = [12, 14, 16, 20, 26];
 
+const FONTS = [
+  { name: 'Default', value: '' },
+  { name: 'Serif · Georgia', value: 'Georgia, serif' },
+  { name: 'Sans · Verdana', value: 'Verdana, sans-serif' },
+  { name: 'Monospace', value: '"Courier New", monospace' },
+  { name: 'Nastaliq · Urdu', value: '"Noto Nastaliq Urdu", serif' },
+  { name: 'Comic Sans', value: '"Comic Sans MS", cursive' },
+  { name: 'Times New Roman', value: '"Times New Roman", serif' },
+];
+
+const escapeHtml = (s: string) =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+const inlineMarkdown = (text: string): string => {
+  let t = escapeHtml(text);
+  t = t.replace(/`([^`]+)`/g, '<code>$1</code>');
+  t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  t = t.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+  t = t.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  t = t.replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>');
+  t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<a href="$2">$1</a>');
+  return t;
+};
+
+const markdownToHtml = (md: string): string => {
+  const lines = md.replace(/\r\n?/g, '\n').split('\n');
+  const out: string[] = [];
+  let inCode = false;
+  let codeBuf: string[] = [];
+  let inUl = false;
+  let inOl = false;
+  let ulItems: string[] = [];
+  let olItems: string[] = [];
+
+  const closeLists = () => {
+    if (inUl) { out.push('<ul>' + ulItems.map(i => `<li>${i}</li>`).join('') + '</ul>'); ulItems = []; inUl = false; }
+    if (inOl) { out.push('<ol>' + olItems.map(i => `<li>${i}</li>`).join('') + '</ol>'); olItems = []; inOl = false; }
+  };
+
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (line.trim().startsWith('```')) {
+      if (!inCode) { closeLists(); inCode = true; codeBuf = []; }
+      else { inCode = false; out.push('<pre><code>' + escapeHtml(codeBuf.join('\n')) + '</code></pre>'); codeBuf = []; }
+      continue;
+    }
+    if (inCode) { codeBuf.push(line); continue; }
+
+    const t = line.trim();
+    if (!t) { closeLists(); continue; }
+
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(t)) { closeLists(); out.push('<hr />'); continue; }
+    const h = t.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { closeLists(); out.push(`<h${h[1].length}>${inlineMarkdown(h[2])}</h${h[1].length}>`); continue; }
+    if (t.startsWith('> ')) { closeLists(); out.push(`<blockquote>${inlineMarkdown(t.slice(2))}</blockquote>`); continue; }
+    const ul = t.match(/^[-*+]\s+(.*)$/);
+    if (ul) { if (inOl) closeLists(); inUl = true; ulItems.push(inlineMarkdown(ul[1])); continue; }
+    const ol = t.match(/^\d+[.)]\s+(.*)$/);
+    if (ol) { if (inUl) closeLists(); inOl = true; olItems.push(inlineMarkdown(ol[1])); continue; }
+    closeLists();
+    out.push(`<p>${inlineMarkdown(t)}</p>`);
+  }
+  closeLists();
+  if (inCode) out.push('<pre><code>' + escapeHtml(codeBuf.join('\n')) + '</code></pre>');
+  return out.join('');
+};
+
+const detectMarkdown = (text: string): boolean => {
+  if (!text) return false;
+  return text.split('\n').some(line => {
+    const t = line.trim();
+    return /^#{1,6}\s/.test(t) || /^[-*+]\s/.test(t) || /^\d+[.)]\s/.test(t) ||
+      /^>\s/.test(t) || /^```/.test(t) || /^(-{3,}|\*{3,}|_{3,})$/.test(t) ||
+      /\*\*[^*]+\*\*/.test(t) || /`[^`]+`/.test(t) || /\[[^\]]+\]\([^)]+\)/.test(t);
+  });
+};
+
 const AVATAR_COLORS = [
   { name: 'Green', value: '#22c55e' },
   { name: 'Red', value: '#ef4444' },
@@ -122,6 +199,9 @@ function App() {
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const [confirm, setConfirm] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [saveState, setSaveState] = useState<'saved' | 'saving'>('saved');
+  const [fmtState, setFmtState] = useState({ bold: false, underline: false });
+  const [selSize, setSelSize] = useState(16);
   const [debouncedSearch, setDebouncedSearch] = useState(search);
   const [modal, setModal] = useState<{ mode: 'addStudent' | 'renameStudent'; oldName?: string } | null>(null);
   const [modalValue, setModalValue] = useState('');
@@ -138,6 +218,7 @@ function App() {
 
   const channelRef = useRef<RealtimeChannel | null>(null);
   const editorRef = useRef<HTMLDivElement | null>(null);
+  const savedRangeRef = useRef<Range | null>(null);
   const historyRef = useRef<ViewState[]>([{ appView: 'students', activeStudent: null, activeId: null, editFromStudent: false }]);
 
   const navigate = useCallback((next: Partial<ViewState>) => {
@@ -149,16 +230,16 @@ function App() {
     setActiveId(newState.activeId);
     setEditFromStudent(newState.editFromStudent);
     setSearch('');
-    window.history.pushState({}, '');
+    window.history.pushState({ ...newState }, '');
   }, []);
 
   const goBack = useCallback(() => { window.history.back(); }, []);
 
   useEffect(() => {
-    const onPop = () => {
+    const onPop = (e: PopStateEvent) => {
       if (historyRef.current.length > 1) {
         historyRef.current.pop();
-        const s = historyRef.current[historyRef.current.length - 1];
+        const s = e.state || historyRef.current[historyRef.current.length - 1];
         setAppView(s.appView);
         setActiveStudent(s.activeStudent);
         setActiveId(s.activeId);
@@ -199,6 +280,56 @@ function App() {
       return () => clearTimeout(t);
     }
   }, [copied]);
+
+  useEffect(() => {
+    if (saveState === 'saving') {
+      const t = setTimeout(() => setSaveState('saved'), 900);
+      return () => clearTimeout(t);
+    }
+  }, [saveState]);
+
+  const saveSelection = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const anchor = sel.anchorNode;
+    if (anchor && editor.contains(anchor)) {
+      savedRangeRef.current = sel.getRangeAt(0).cloneRange();
+    }
+  }, []);
+
+  const restoreSelection = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.focus();
+    const r = savedRangeRef.current;
+    if (r && r.startContainer.isConnected && r.endContainer.isConnected) {
+      const sel = window.getSelection();
+      if (!sel) return;
+      sel.removeAllRanges();
+      sel.addRange(r.cloneRange());
+    }
+  }, []);
+
+  useEffect(() => {
+    if (appView !== 'editing') return;
+    setSaveState('saved');
+    const update = () => {
+      saveSelection();
+      setFmtState({
+        bold: document.queryCommandState('bold'),
+        underline: document.queryCommandState('underline'),
+      });
+      setSelSize(getSelectionSize());
+    };
+    document.addEventListener('selectionchange', update);
+    document.addEventListener('input', update);
+    return () => {
+      document.removeEventListener('selectionchange', update);
+      document.removeEventListener('input', update);
+    };
+  }, [appView, saveSelection]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
@@ -289,6 +420,7 @@ function App() {
       updated.language = detectLanguage(`${updated.title} ${stripHtml(updated.content)}`);
     }
     setNotes(prev => prev.map(note => (note.id === updated.id ? updated : note)));
+    setSaveState('saving');
     syncUpsertDebounced(updated);
   }, [activeNote]);
 
@@ -399,13 +531,44 @@ function App() {
   }, [notes, activeStudent, navigate]);
 
   const formatText = useCallback((command: string, value?: string) => {
-    document.execCommand(command, false, value);
-    if (editorRef.current) updateNote('content', editorRef.current.innerHTML);
-  }, [updateNote]);
+    const editor = editorRef.current;
+    if (!editor) return;
+    restoreSelection();
+    const before = editor.innerHTML;
+    const ok = document.execCommand(command, false, value);
+    if (ok && editor.innerHTML !== before) {
+      updateNote('content', editor.innerHTML);
+      saveSelection();
+      return;
+    }
+    // Fallback: apply style programmatically (execCommand can silently no-op)
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) { editor.focus(); return; }
+    const range = sel.getRangeAt(0);
+    const styles: Record<string, [string, string]> = {
+      bold: ['fontWeight', 'bold'],
+      italic: ['fontStyle', 'italic'],
+      underline: ['textDecorationLine', 'underline'],
+    };
+    const st = styles[command];
+    if (!st) { editor.focus(); return; }
+    const [prop, val] = st;
+    const span = document.createElement('span');
+    span.style.setProperty(prop, val);
+    try {
+      range.surroundContents(span);
+    } catch {
+      document.execCommand('styleWithCSS', false, 'true');
+      document.execCommand(command, false, undefined);
+    }
+    updateNote('content', editor.innerHTML);
+    saveSelection();
+  }, [updateNote, restoreSelection, saveSelection]);
 
   const applyFontSize = useCallback((size: number) => {
     const editor = editorRef.current;
     if (!editor) return;
+    restoreSelection();
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
       editor.focus();
@@ -434,7 +597,8 @@ function App() {
       sel.addRange(r);
     }
     editor.focus();
-  }, [updateNote]);
+    saveSelection();
+  }, [updateNote, restoreSelection, saveSelection]);
 
   const getSelectionSize = (): number => {
     const sel = window.getSelection();
@@ -457,6 +621,60 @@ function App() {
     const size = FONT_LEVELS[level - 1] ?? 16;
     applyFontSize(size);
   }, [applyFontSize]);
+
+  const applyFontFamily = useCallback((family: string) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    restoreSelection();
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
+      editor.focus();
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    let spans: HTMLElement[] = [];
+    try {
+      const span = document.createElement('span');
+      if (family) span.style.fontFamily = family;
+      range.surroundContents(span);
+      spans = [span];
+    } catch {
+      document.execCommand('styleWithCSS', false, 'true');
+      document.execCommand('fontName', false, family);
+      const markers = Array.from(editor.querySelectorAll('font[face]'));
+      spans = markers.map(m => {
+        const face = m.getAttribute('face') || '';
+        const el = document.createElement('span');
+        if (face) el.style.fontFamily = face;
+        while (m.firstChild) el.appendChild(m.firstChild);
+        m.replaceWith(el);
+        return el;
+      });
+    }
+    updateNote('content', editor.innerHTML);
+    if (spans.length > 0) {
+      const r = document.createRange();
+      r.setStart(spans[0], 0);
+      r.setEnd(spans[spans.length - 1], spans[spans.length - 1].childNodes.length);
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
+    editor.focus();
+    saveSelection();
+  }, [updateNote, restoreSelection, saveSelection]);
+
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLDivElement>) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const text = e.clipboardData.getData('text/plain');
+    if (!text || !detectMarkdown(text)) return;
+    e.preventDefault();
+    restoreSelection();
+    const html = markdownToHtml(text);
+    document.execCommand('insertHTML', false, html);
+    updateNote('content', editor.innerHTML);
+    saveSelection();
+  }, [updateNote, restoreSelection, saveSelection]);
 
   const handleStudentClick = useCallback((student: string) => { navigate({ activeStudent: student, appView: 'studentNotes' }); }, [navigate]);
   const handleNoteClick = useCallback((id: string) => { navigate({ activeId: id, appView: 'reading' }); }, [navigate]);
@@ -534,6 +752,15 @@ function App() {
         <header className="reading-topbar">
           <button className="icon-btn" onClick={handleBackToStudents} title="Back" aria-label="Back">
             <ArrowLeft size={20} />
+          </button>
+          <button
+            className="student-avatar inline"
+            style={{ background: getStudentColor(activeStudent, avatarColors) }}
+            onClick={() => setColorPickerFor(activeStudent)}
+            title="Change avatar color"
+            aria-label={`Change avatar color for ${activeStudent}`}
+          >
+            {activeStudent.charAt(0).toUpperCase()}
           </button>
           <div className="reading-title">
             <p className="eyebrow">Notes</p>
@@ -630,11 +857,23 @@ function App() {
           <button className="icon-btn" onClick={handleBackToNotes} title="Back" aria-label="Back">
             <ArrowLeft size={20} />
           </button>
+          <button
+            className="student-avatar inline"
+            style={{ background: getStudentColor(activeNote.student, avatarColors) }}
+            onClick={() => setColorPickerFor(activeNote.student)}
+            title="Change avatar color"
+            aria-label={`Change avatar color for ${activeNote.student}`}
+          >
+            {activeNote.student.charAt(0).toUpperCase()}
+          </button>
           <div className="editing-title">
             <p className="eyebrow">Editing</p>
             <h1>{activeNote.title || 'Untitled note'}</h1>
           </div>
           <div className="editing-actions">
+            <span className={`save-indicator ${saveState === 'saving' ? 'saving' : ''}`}>
+              {saveState === 'saving' ? 'Saving…' : 'Saved'}
+            </span>
             <button className="icon-btn" onClick={() => deleteNote(activeNote.id)} title="Delete" aria-label="Delete">
               <Trash2 size={18} />
             </button>
@@ -649,21 +888,46 @@ function App() {
             />
           )}
           <input
+            className="title-input"
             value={activeNote.title}
             onChange={e => updateNote('title', e.target.value)}
             placeholder="Title"
           />
-          <div className="rich-toolbar" onMouseDown={e => e.preventDefault()}>
-            <button type="button" className="toolbar-btn" onClick={() => formatText('bold')} title="Bold"><Bold size={18} /></button>
-            <button type="button" className="toolbar-btn" onClick={() => formatText('italic')} title="Italic"><Italic size={18} /></button>
-            <button type="button" className="toolbar-btn" onClick={() => formatText('underline')} title="Underline"><Underline size={18} /></button>
+          <div
+            className="rich-toolbar"
+            onMouseDown={e => {
+              const t = e.target as HTMLElement;
+              if (t.closest('select')) return;
+              e.preventDefault();
+            }}
+          >
+            <button type="button" className={`toolbar-btn ${fmtState.bold ? 'active' : ''}`} onClick={() => formatText('bold')} title="Bold"><Bold size={20} /></button>
+            <button type="button" className={`toolbar-btn ${fmtState.underline ? 'active' : ''}`} onClick={() => formatText('underline')} title="Underline"><Underline size={20} /></button>
+            <button type="button" className="toolbar-btn" onClick={() => formatText('italic')} title="Italic"><Italic size={20} /></button>
             <span className="toolbar-divider" />
-            <button type="button" className="toolbar-btn" onClick={() => changeFontSize(-2)} title="Decrease font size"><span className="fs-symbol fs-down">A−</span></button>
-            <button type="button" className="toolbar-btn" onClick={() => changeFontSize(2)} title="Increase font size"><span className="fs-symbol fs-up">A+</span></button>
+            <button type="button" className="toolbar-btn" onClick={() => changeFontSize(-1)} title="Decrease font size"><span className="fs-symbol fs-down">A−</span></button>
+            <button type="button" className="toolbar-btn" onClick={() => changeFontSize(1)} title="Increase font size"><span className="fs-symbol fs-up">A+</span></button>
+            <span className="size-indicator" title="Selected text size">{selSize}px</span>
             <span className="toolbar-divider" />
             {[1, 2, 3, 4, 5].map(n => (
               <button key={n} type="button" className="toolbar-btn fs-level" onClick={() => setFontSize(n)} title={`Font size ${n}`}>{n}</button>
             ))}
+            <span className="toolbar-divider" />
+            <select
+              className="font-select"
+              defaultValue=""
+              title="Apply font to selection"
+              aria-label="Apply font to selection"
+              onChange={e => {
+                applyFontFamily(e.target.value);
+                e.target.value = '';
+              }}
+            >
+              <option value="" disabled>Font</option>
+              {FONTS.map(f => (
+                <option key={f.name} value={f.value}>{f.name}</option>
+              ))}
+            </select>
           </div>
           <div
             ref={editorRef}
@@ -671,8 +935,13 @@ function App() {
             contentEditable
             suppressContentEditableWarning
             onInput={e => updateNote('content', e.currentTarget.innerHTML)}
+            onPaste={handlePaste}
             data-placeholder="Write your note…"
           />
+          <footer className="editor-footer">
+            <span>{stripHtml(activeNote.content).trim().split(/\s+/).filter(Boolean).length} words</span>
+            {timeAgo(activeNote.updated_at) && <span>Updated {timeAgo(activeNote.updated_at)}</span>}
+          </footer>
         </main>
       </div>
     );
@@ -722,11 +991,20 @@ function App() {
                   key={c.value}
                   className={`color-swatch ${getStudentColor(colorPickerFor, avatarColors) === c.value ? 'selected' : ''}`}
                   style={{ background: c.value }}
-                  onClick={() => { setStudentColor(colorPickerFor, c.value); setColorPickerFor(null); }}
+                  onClick={() => { setStudentColor(colorPickerFor, c.value); }}
                   title={c.name}
                   aria-label={c.name}
                 />
               ))}
+            </div>
+            <div className="color-wheel">
+              <label htmlFor="avatar-color-wheel">Custom color</label>
+              <input
+                id="avatar-color-wheel"
+                type="color"
+                value={getStudentColor(colorPickerFor, avatarColors)}
+                onChange={e => setStudentColor(colorPickerFor, e.target.value)}
+              />
             </div>
             <div className="modal-actions">
               <button className="modal-btn" onClick={() => setColorPickerFor(null)}>Done</button>
