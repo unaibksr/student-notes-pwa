@@ -43,6 +43,36 @@ const COLOR_KEY = 'teacher-notes-colors';
 const getStudentColor = (student: string, map: Record<string, string>) =>
   map[student] || AVATAR_COLORS[0].value;
 
+let supabaseSeeded = false;
+
+const syncUpsert = (note: Note) => {
+  if (!supabase) return;
+  (async () => {
+    try { await supabase.from('notes').upsert({
+      id: note.id, student: note.student, title: note.title,
+      content: note.content, language: note.language, updated_at: note.updated_at,
+    }); } catch { /* offline or error: keep local state */ }
+  })();
+};
+const syncDelete = (id: string) => {
+  if (!supabase) return;
+  (async () => {
+    try { await supabase.from('notes').delete().eq('id', id); } catch { /* ignore */ }
+  })();
+};
+const syncRenameStudent = (from: string, to: string) => {
+  if (!supabase) return;
+  (async () => {
+    try { await supabase.from('notes').update({ student: to }).eq('student', from); } catch { /* ignore */ }
+  })();
+};
+const syncDeleteStudent = (name: string) => {
+  if (!supabase) return;
+  (async () => {
+    try { await supabase.from('notes').delete().eq('student', name); } catch { /* ignore */ }
+  })();
+};
+
 function App() {
   const [notes, setNotes] = useState<Note[]>(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -163,6 +193,33 @@ function App() {
     return () => { channel.unsubscribe(); channelRef.current = null; };
   }, []);
 
+  useEffect(() => {
+    if (!supabase) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase.from('notes').select('*').order('updated_at', { ascending: false });
+      if (cancelled) return;
+      if (data && data.length > 0) {
+        setNotes(data as Note[]);
+      } else if (!supabaseSeeded) {
+        supabaseSeeded = true;
+        const { data: existing } = await supabase.from('notes').select('student');
+        const existingStudents = new Set((existing || []).map((n: { student: string }) => n.student));
+        let raw = localStorage.getItem(STORAGE_KEY);
+        let local: Note[] = [];
+        try { local = raw ? JSON.parse(raw) : []; } catch { local = []; }
+        if (!Array.isArray(local)) local = [];
+        for (const n of local) {
+          if (!existingStudents.has(n.student)) {
+            existingStudents.add(n.student);
+            await supabase.from('notes').upsert(n);
+          }
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   const filteredStudents = useMemo(() => students, [students]);
 
   const filteredNotesForStudent = useMemo(() => {
@@ -180,16 +237,14 @@ function App() {
   }, [activeNote?.id, appView]);
 
   const updateNote = useCallback((field: keyof Note, value: string) => {
-    const id = activeId;
-    setNotes(prev => prev.map(note => {
-      if (note.id !== id) return note;
-      const updated = { ...note, [field]: value, updated_at: new Date().toISOString() };
-      if (field === 'content' || field === 'title') {
-        updated.language = detectLanguage(`${updated.title} ${stripHtml(updated.content)}`);
-      }
-      return updated;
-    }));
-  }, [activeId]);
+    if (!activeNote) return;
+    const updated: Note = { ...activeNote, [field]: value, updated_at: new Date().toISOString() };
+    if (field === 'content' || field === 'title') {
+      updated.language = detectLanguage(`${updated.title} ${stripHtml(updated.content)}`);
+    }
+    setNotes(prev => prev.map(note => (note.id === updated.id ? updated : note)));
+    syncUpsert(updated);
+  }, [activeNote]);
 
   const createNote = useCallback((student: string) => {
     const newNote: Note = {
@@ -201,6 +256,7 @@ function App() {
       updated_at: new Date().toISOString()
     };
     setNotes(prev => [newNote, ...prev]);
+    syncUpsert(newNote);
     navigate({ appView: 'editing', activeStudent: student, activeId: newNote.id, editFromStudent: true });
     showToast('Note created');
   }, [navigate]);
@@ -213,6 +269,7 @@ function App() {
   const deleteNote = useCallback((id: string) => {
     if (!window.confirm('Are you sure you want to delete this note?')) return;
     setNotes(prev => prev.filter(note => note.id !== id));
+    syncDelete(id);
     if (activeId === id) {
       navigate({ appView: 'studentNotes', activeId: null, editFromStudent: false });
     }
@@ -229,18 +286,17 @@ function App() {
     const trimmed = modalValue.trim();
     if (!trimmed) { setModal(null); return; }
     if (modal.mode === 'addStudent') {
-      setNotes(prev => {
-        if (prev.some(n => n.student === trimmed)) return prev;
-        const placeholder: Note = {
-          id: crypto.randomUUID(),
-          student: trimmed,
-          title: 'New note',
-          content: '<p></p>',
-          language: 'en',
-          updated_at: new Date().toISOString()
-        };
-        return [placeholder, ...prev];
-      });
+      if (notes.some(n => n.student === trimmed)) { setModal(null); return; }
+      const placeholder: Note = {
+        id: crypto.randomUUID(),
+        student: trimmed,
+        title: 'New note',
+        content: '<p></p>',
+        language: 'en',
+        updated_at: new Date().toISOString()
+      };
+      setNotes(prev => prev.some(n => n.student === trimmed) ? prev : [placeholder, ...prev]);
+      syncUpsert(placeholder);
       showToast(`Added ${trimmed}`);
     } else if (modal.mode === 'renameStudent' && modal.oldName) {
       const oldName = modal.oldName;
@@ -251,10 +307,11 @@ function App() {
         return next;
       });
       if (activeStudent === oldName) setActiveStudent(trimmed);
+      syncRenameStudent(oldName, trimmed);
       showToast('Student renamed');
     }
     setModal(null);
-  }, [modal, modalValue, activeStudent]);
+  }, [modal, modalValue, activeStudent, notes]);
 
   const setStudentColor = useCallback((student: string, color: string) => {
     setAvatarColors(prev => ({ ...prev, [student]: color }));
@@ -269,6 +326,7 @@ function App() {
       delete next[name];
       return next;
     });
+    syncDeleteStudent(name);
     if (activeStudent === name) { navigate({ appView: 'students', activeStudent: null, activeId: null, editFromStudent: false }); }
     showToast('Student removed');
   }, [notes, activeStudent, navigate]);
