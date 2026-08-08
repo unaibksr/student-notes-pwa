@@ -35,7 +35,18 @@ create trigger notes_set_updated_at
   for each row execute function public.set_updated_at();
 
 -- 3. Realtime (the app subscribes via postgres_changes on public.notes)
-alter publication supabase_realtime add table public.notes;
+-- Idempotent: only add if not already a member (no IF NOT EXISTS for publications).
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'notes'
+  ) then
+    alter publication supabase_realtime add table public.notes;
+  end if;
+end $$;
 
 -- 4. Row Level Security
 -- This app has no auth layer, so we allow anonymous full access.
