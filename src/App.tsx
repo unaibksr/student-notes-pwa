@@ -701,10 +701,45 @@ function App() {
       return;
     }
     const range = sel.getRangeAt(0);
+    
+    // If family is empty (Default option), remove all font-family spans
+    if (!family) {
+      // Find all spans with fontFamily set and remove them
+      const allSpans = editor.querySelectorAll('span');
+      const spansToRemove: HTMLElement[] = [];
+      allSpans.forEach(span => {
+        if (span.style.fontFamily) {
+          // Check if this span intersects with our selection
+          const spanRange = document.createRange();
+          spanRange.selectNodeContents(span);
+          if (range.compareBoundaryPoints(Range.START_TO_END, spanRange) > 0 &&
+              range.compareBoundaryPoints(Range.END_TO_START, spanRange) < 0) {
+            spansToRemove.push(span);
+          }
+        }
+      });
+      
+      // Unwrap the spans
+      spansToRemove.forEach(span => {
+        const parent = span.parentNode;
+        while (span.firstChild) {
+          parent?.insertBefore(span.firstChild, span);
+        }
+        span.remove();
+        if (parent && parent.normalize) {
+          parent.normalize();
+        }
+      });
+      
+      updateNote('content', editor.innerHTML);
+      saveSelection();
+      return;
+    }
+    
     let spans: HTMLElement[] = [];
     try {
       const span = document.createElement('span');
-      if (family) span.style.fontFamily = family;
+      span.style.fontFamily = family;
       range.surroundContents(span);
       spans = [span];
     } catch {
