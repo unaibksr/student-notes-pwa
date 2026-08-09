@@ -353,7 +353,105 @@ button, input, select { font: inherit; }
   .reading-content, .editor-form-full {
     padding: 1.25rem 1rem;
   }
+  .students-layout.notes-view .note-list {
+    grid-template-columns: 1fr;
+  }
 }
+
+/* Landscape/Horizontal orientation optimizations */
+@media (max-height: 600px) and (orientation: landscape) {
+  .topbar, .reading-topbar, .editing-topbar {
+    padding: 0.4rem 1rem;
+  }
+  .topbar h1, .reading-title h1, .editing-title h1 {
+    font-size: 0.95rem;
+  }
+  .eyebrow {
+    font-size: 0.5rem;
+  }
+  .icon-btn {
+    width: 32px;
+    height: 32px;
+  }
+  .rich-toolbar {
+    padding: 0.4rem;
+    gap: 0.4rem;
+    top: 0;
+  }
+  .toolbar-btn {
+    width: 36px;
+    height: 36px;
+  }
+  .student-avatar {
+    width: 36px;
+    height: 36px;
+    font-size: 1rem;
+  }
+  .student-info strong {
+    font-size: 0.875rem;
+  }
+  .student-info span {
+    font-size: 0.7rem;
+  }
+  .hero-card {
+    padding: 1.5rem;
+  }
+  .hero-icon {
+    width: 48px;
+    height: 48px;
+  }
+  .hero-card h2 {
+    font-size: 1.25rem;
+  }
+  .hero-stats strong {
+    font-size: 1.25rem;
+  }
+  .fab {
+    right: 1rem;
+    bottom: 1rem;
+    width: 48px;
+    height: 48px;
+  }
+  .modal {
+    padding: 1rem;
+    max-width: 320px;
+  }
+  .modal h3 {
+    font-size: 0.95rem;
+  }
+  .toast {
+    bottom: 1rem;
+    font-size: 0.8rem;
+  }
+  .editor-form-full {
+    gap: 0.75rem;
+  }
+  .editor-form-full input {
+    padding: 0.75rem;
+  }
+  .title-input {
+    font-size: 1.1rem !important;
+  }
+  .rich-editor {
+    min-height: 200px;
+  }
+  .note-card {
+    padding: 0.75rem;
+  }
+  .note-meta strong {
+    font-size: 0.875rem;
+  }
+  .note-card p {
+    font-size: 0.75rem;
+  }
+  .search-box {
+    padding: 0.5rem 0.75rem;
+  }
+  .search-box input {
+    font-size: 0.8rem;
+  }
+}
+
 @media (min-width: 640px) {
   .topbar, .reading-topbar, .editing-topbar { padding: 0.75rem 1.5rem; }
   .search-row { padding: 0.75rem 1.5rem; }
