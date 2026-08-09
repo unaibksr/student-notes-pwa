@@ -537,8 +537,10 @@ function App() {
     let node: Node | null = sel.anchorNode;
     if (node && node.nodeType === Node.TEXT_NODE) node = node.parentElement;
     while (node && node !== editorRef.current?.parentElement) {
-      if (node instanceof HTMLElement && node.style.backgroundColor === 'rgb(254, 215, 170)') return true;
-      if (node instanceof HTMLElement && node.style.backgroundColor === '#fed7aa') return true;
+      if (node instanceof HTMLElement) {
+        const bg = node.style.backgroundColor;
+        if (bg && bg !== 'transparent' && bg !== 'rgba(0, 0, 0, 0)' && bg !== '') return true;
+      }
       node = node.parentNode;
     }
     return false;
@@ -554,14 +556,33 @@ function App() {
       if (!sel || sel.rangeCount === 0 || sel.isCollapsed) { editor.focus(); return; }
       const range = sel.getRangeAt(0);
       
-      // Check if already highlighted - toggle off
+      // Check if selection is within a highlighted span
       let node: Node | null = range.commonAncestorContainer;
       if (node.nodeType === Node.TEXT_NODE) node = node.parentElement;
-      if (node instanceof HTMLElement && (node.style.backgroundColor === 'rgb(254, 215, 170)' || node.style.backgroundColor === '#fed7aa')) {
-        // Remove highlight
-        const parent = node.parentNode;
-        while (node.firstChild) parent?.insertBefore(node.firstChild, node);
-        node.remove();
+      
+      // Traverse up to find if we're inside a highlight span
+      let highlightSpan: HTMLElement | null = null;
+      let tempNode: Node | null = node;
+      while (tempNode && tempNode !== editor) {
+        if (tempNode instanceof HTMLElement && tempNode.style.backgroundColor && 
+            tempNode.style.backgroundColor !== 'transparent' && tempNode.style.backgroundColor !== 'rgba(0, 0, 0, 0)' && tempNode.style.backgroundColor !== '') {
+          highlightSpan = tempNode;
+          break;
+        }
+        tempNode = tempNode.parentNode;
+      }
+      
+      if (highlightSpan) {
+        // Remove highlight by unwrapping the span
+        const parent = highlightSpan.parentNode;
+        while (highlightSpan.firstChild) {
+          parent?.insertBefore(highlightSpan.firstChild, highlightSpan);
+        }
+        highlightSpan.remove();
+        // Merge adjacent text nodes
+        if (parent && parent.normalize) {
+          parent.normalize();
+        }
         updateNote('content', editor.innerHTML);
         saveSelection();
         return;
