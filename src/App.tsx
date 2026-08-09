@@ -565,7 +565,8 @@ function App() {
       let tempNode: Node | null = node;
       while (tempNode && tempNode !== editor) {
         if (tempNode instanceof HTMLElement && tempNode.style.backgroundColor && 
-            tempNode.style.backgroundColor !== 'transparent' && tempNode.style.backgroundColor !== 'rgba(0, 0, 0, 0)' && tempNode.style.backgroundColor !== '') {
+            tempNode.style.backgroundColor !== 'transparent' && tempNode.style.backgroundColor !== 'rgba(0, 0, 0, 0)' && tempNode.style.backgroundColor !== '' &&
+            tempNode.style.backgroundColor === 'rgb(191, 219, 254)') {
           highlightSpan = tempNode;
           break;
         }
@@ -590,7 +591,7 @@ function App() {
       
       // Apply highlight
       const span = document.createElement('span');
-      span.style.backgroundColor = '#fed7aa';
+      span.style.backgroundColor = '#bfdbfe';
       try {
         range.surroundContents(span);
       } catch {
