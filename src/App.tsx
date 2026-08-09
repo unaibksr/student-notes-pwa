@@ -9,6 +9,8 @@ type Note = {
   content: string;
   language: 'en' | 'ur';
   updated_at: string;
+  tags: string[];
+  archived?: boolean;
 };
 
 type ThemeMode = 'light' | 'dark';
@@ -16,9 +18,10 @@ type AppView = 'students' | 'studentNotes' | 'reading' | 'editing';
 type ViewState = { appView: AppView; activeStudent: string | null; activeId: string | null; editFromStudent: boolean };
 
 const STORAGE_KEY = 'teacher-notes-pwa';
+const SYNC_QUEUE_KEY = 'teacher-notes-sync-queue';
 const SAMPLE_NOTES: Note[] = [
-  { id: crypto.randomUUID(), student: 'Ayesha', title: 'Reading progress', content: 'Ayesha is improving her reading confidence and needs encouragement with longer passages.', language: 'en', updated_at: new Date().toISOString() },
-  { id: crypto.randomUUID(), student: 'Bilal', title: 'MUQADDIMA', content: 'بلاگ کے ساتھ مشق کرانے کی ضرورت ہے۔ نظم میں گونج اور سنیریت کو یقینی بنائیں۔', language: 'ur', updated_at: new Date().toISOString() },
+  { id: crypto.randomUUID(), student: 'Ayesha', title: 'Reading progress', content: 'Ayesha is improving her reading confidence and needs encouragement with longer passages.', language: 'en', updated_at: new Date().toISOString(), tags: [] },
+  { id: crypto.randomUUID(), student: 'Bilal', title: 'MUQADDIMA', content: 'بلاگ کے ساتھ مشق کرانے کی ضرورت ہے۔ نظم میں گونج اور سنیریت کو یقینی بنائیں۔', language: 'ur', updated_at: new Date().toISOString(), tags: [] },
 ];
 
 const detectLanguage = (text: string): 'en' | 'ur' => {
@@ -139,19 +142,101 @@ const timeAgo = (iso: string): string => {
 
 let supabaseSeeded = false;
 
+type SyncOperation = {
+  type: 'upsert' | 'delete';
+  note?: Note;
+  id?: string;
+  timestamp: number;
+};
+
+const getSyncQueue = (): SyncOperation[] => {
+  try {
+    const saved = localStorage.getItem(SYNC_QUEUE_KEY);
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+};
+
+const addToSyncQueue = (operation: SyncOperation) => {
+  const queue = getSyncQueue();
+  queue.push(operation);
+  localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(queue));
+  processSyncQueue();
+};
+
+const removeFromQueue = (index: number) => {
+  const queue = getSyncQueue();
+  queue.splice(index, 1);
+  localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(queue));
+};
+
+const processSyncQueue = async () => {
+  if (!supabase || !navigator.onLine) return;
+  
+  const queue = getSyncQueue();
+  if (queue.length === 0) return;
+
+  for (let i = 0; i < queue.length; i++) {
+    const operation = queue[i];
+    try {
+      if (operation.type === 'upsert' && operation.note) {
+        await supabase.from('notes').upsert({
+          id: operation.note.id,
+          student: operation.note.student,
+          title: operation.note.title,
+          content: operation.note.content,
+          language: operation.note.language,
+          updated_at: operation.note.updated_at,
+        });
+        removeFromQueue(i);
+        i--;
+      } else if (operation.type === 'delete' && operation.id) {
+        await supabase.from('notes').delete().eq('id', operation.id);
+        removeFromQueue(i);
+        i--;
+      }
+    } catch (error) {
+      console.error('Sync failed for operation:', error);
+      break;
+    }
+  }
+};
+
 const syncUpsert = (note: Note) => {
   if (!supabase) return;
+  if (!navigator.onLine) {
+    addToSyncQueue({ type: 'upsert', note, timestamp: Date.now() });
+    return;
+  }
   (async () => {
-    try { await supabase.from('notes').upsert({
-      id: note.id, student: note.student, title: note.title,
-      content: note.content, language: note.language, updated_at: note.updated_at,
-    }); } catch { /* offline or error: keep local state */ }
+    try { 
+      await supabase.from('notes').upsert({
+        id: note.id, 
+        student: note.student, 
+        title: note.title,
+        content: note.content, 
+        language: note.language, 
+        updated_at: note.updated_at,
+      }); 
+    } catch { 
+      addToSyncQueue({ type: 'upsert', note, timestamp: Date.now() });
+    }
   })();
 };
+
 const syncDelete = (id: string) => {
   if (!supabase) return;
+  if (!navigator.onLine) {
+    addToSyncQueue({ type: 'delete', id, timestamp: Date.now() });
+    return;
+  }
   (async () => {
-    try { await supabase.from('notes').delete().eq('id', id); } catch { /* ignore */ }
+    try { 
+      await supabase.from('notes').delete().eq('id', id); 
+    } catch { 
+      addToSyncQueue({ type: 'delete', id, timestamp: Date.now() });
+    }
   })();
 };
 const syncRenameStudent = (from: string, to: string) => {
@@ -341,11 +426,27 @@ function App() {
   }, [avatarColors]);
 
   useEffect(() => {
-    const onOnline = () => setIsOnline(true);
+    const onOnline = () => {
+      setIsOnline(true);
+      processSyncQueue();
+      fetchLatestNotes();
+    };
     const onOffline = () => setIsOnline(false);
     window.addEventListener('online', onOnline);
     window.addEventListener('offline', onOffline);
     return () => { window.removeEventListener('online', onOnline); window.removeEventListener('offline', onOffline); };
+  }, []);
+
+  const fetchLatestNotes = useCallback(async () => {
+    if (!supabase) return;
+    try {
+      const { data } = await supabase.from('notes').select('*').order('updated_at', { ascending: false });
+      if (data && data.length > 0) {
+        setNotes(data as Note[]);
+      }
+    } catch (error) {
+      console.error('Failed to fetch latest notes:', error);
+    }
   }, []);
 
   useEffect(() => {
@@ -372,27 +473,42 @@ function App() {
   useEffect(() => {
     if (!supabase) return;
     let cancelled = false;
-    (async () => {
-      const { data } = await supabase.from('notes').select('*').order('updated_at', { ascending: false });
-      if (cancelled) return;
-      if (data && data.length > 0) {
-        setNotes(data as Note[]);
-      } else if (!supabaseSeeded) {
-        supabaseSeeded = true;
-        const { data: existing } = await supabase.from('notes').select('student');
-        const existingStudents = new Set((existing || []).map((n: { student: string }) => n.student));
-        let raw = localStorage.getItem(STORAGE_KEY);
-        let local: Note[] = [];
-        try { local = raw ? JSON.parse(raw) : []; } catch { local = []; }
-        if (!Array.isArray(local)) local = [];
-        for (const n of local) {
-          if (!existingStudents.has(n.student)) {
-            existingStudents.add(n.student);
-            await supabase.from('notes').upsert(n);
+    
+    const fetchAndSeed = async () => {
+      try {
+        const { data } = await supabase.from('notes').select('*').order('updated_at', { ascending: false });
+        if (cancelled) return;
+        
+        if (data && data.length > 0) {
+          setNotes(data as Note[]);
+        } else if (!supabaseSeeded) {
+          supabaseSeeded = true;
+          const { data: existing } = await supabase.from('notes').select('student');
+          const existingStudents = new Set((existing || []).map((n: { student: string }) => n.student));
+          let raw = localStorage.getItem(STORAGE_KEY);
+          let local: Note[] = [];
+          try { local = raw ? JSON.parse(raw) : []; } catch { local = []; }
+          if (!Array.isArray(local)) local = [];
+          for (const n of local) {
+            if (!existingStudents.has(n.student)) {
+              existingStudents.add(n.student);
+              await supabase.from('notes').upsert(n);
+            }
           }
         }
+      } catch (error) {
+        console.error('Failed to fetch notes from Supabase:', error);
+        const saved = localStorage.getItem(STORAGE_KEY);
+        if (saved) {
+          try {
+            const localNotes = JSON.parse(saved);
+            setNotes(localNotes);
+          } catch {}
+        }
       }
-    })();
+    };
+    
+    fetchAndSeed();
     return () => { cancelled = true; };
   }, []);
 
@@ -440,7 +556,8 @@ function App() {
       title: '',
       content: '',
       language: 'en',
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
+      tags: []
     };
     setNotes(prev => [newNote, ...prev]);
     syncUpsert(newNote);
@@ -486,7 +603,8 @@ function App() {
         title: '',
         content: '',
         language: 'en',
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
+        tags: []
       };
       setNotes(prev => prev.some(n => n.student === trimmed) ? prev : [placeholder, ...prev]);
       syncUpsert(placeholder);
