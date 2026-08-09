@@ -200,7 +200,7 @@ function App() {
   const [confirm, setConfirm] = useState<{ title: string; message: string; onConfirm: () => void } | null>(null);
   const [copied, setCopied] = useState(false);
   const [saveState, setSaveState] = useState<'saved' | 'saving'>('saved');
-  const [fmtState, setFmtState] = useState({ bold: false, underline: false });
+  const [fmtState, setFmtState] = useState({ bold: false, underline: false, highlight: false });
   const [selSize, setSelSize] = useState(16);
   const [debouncedSearch, setDebouncedSearch] = useState(search);
   const [modal, setModal] = useState<{ mode: 'addStudent' | 'renameStudent'; oldName?: string } | null>(null);
@@ -320,6 +320,7 @@ function App() {
       setFmtState({
         bold: document.queryCommandState('bold'),
         underline: document.queryCommandState('underline'),
+        highlight: checkHighlightActive(),
       });
       setSelSize(getSelectionSize());
     };
@@ -530,6 +531,19 @@ function App() {
     });
   }, [notes, activeStudent, navigate]);
 
+  const checkHighlightActive = (): boolean => {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return false;
+    let node: Node | null = sel.anchorNode;
+    if (node && node.nodeType === Node.TEXT_NODE) node = node.parentElement;
+    while (node && node !== editorRef.current?.parentElement) {
+      if (node instanceof HTMLElement && node.style.backgroundColor === 'rgb(254, 215, 170)') return true;
+      if (node instanceof HTMLElement && node.style.backgroundColor === '#fed7aa') return true;
+      node = node.parentNode;
+    }
+    return false;
+  };
+
   const formatText = useCallback((command: string, value?: string) => {
     const editor = editorRef.current;
     if (!editor) return;
@@ -539,8 +553,23 @@ function App() {
       const sel = window.getSelection();
       if (!sel || sel.rangeCount === 0 || sel.isCollapsed) { editor.focus(); return; }
       const range = sel.getRangeAt(0);
+      
+      // Check if already highlighted - toggle off
+      let node: Node | null = range.commonAncestorContainer;
+      if (node.nodeType === Node.TEXT_NODE) node = node.parentElement;
+      if (node instanceof HTMLElement && (node.style.backgroundColor === 'rgb(254, 215, 170)' || node.style.backgroundColor === '#fed7aa')) {
+        // Remove highlight
+        const parent = node.parentNode;
+        while (node.firstChild) parent?.insertBefore(node.firstChild, node);
+        node.remove();
+        updateNote('content', editor.innerHTML);
+        saveSelection();
+        return;
+      }
+      
+      // Apply highlight
       const span = document.createElement('span');
-      span.style.backgroundColor = '#f97316';
+      span.style.backgroundColor = '#fed7aa';
       try {
         range.surroundContents(span);
       } catch {
@@ -920,7 +949,7 @@ function App() {
           >
             <button type="button" className={`toolbar-btn ${fmtState.bold ? 'active' : ''}`} onClick={() => formatText('bold')} title="Bold"><Bold size={20} /></button>
             <button type="button" className={`toolbar-btn ${fmtState.underline ? 'active' : ''}`} onClick={() => formatText('underline')} title="Underline"><Underline size={20} /></button>
-            <button type="button" className="toolbar-btn" onClick={() => formatText('highlight')} title="Highlight"><Highlighter size={20} /></button>
+            <button type="button" className={`toolbar-btn ${fmtState.highlight ? 'active' : ''}`} onClick={() => formatText('highlight')} title="Highlight"><Highlighter size={20} /></button>
             <span className="toolbar-divider" />
             <button type="button" className="toolbar-btn" onClick={() => changeFontSize(-1)} title="Decrease font size"><span className="fs-symbol fs-down">A−</span></button>
             <button type="button" className="toolbar-btn" onClick={() => changeFontSize(1)} title="Increase font size"><span className="fs-symbol fs-up">A+</span></button>
