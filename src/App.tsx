@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Moon, Search, SunMedium, Plus, Bold, Italic, Underline, ArrowLeft, Edit2, Trash2, ChevronRight, Palette, Copy, Check } from 'lucide-react';
+import { BookOpen, Moon, Search, SunMedium, Plus, Bold, Underline, ArrowLeft, Edit2, Trash2, ChevronRight, Palette, Copy, Check, Highlighter } from 'lucide-react';
 import { createClient, RealtimeChannel } from '@supabase/supabase-js';
 
 type Note = {
@@ -436,8 +436,8 @@ function App() {
     const newNote: Note = {
       id: crypto.randomUUID(),
       student,
-      title: 'Untitled note',
-      content: '<p>Write your reflection here…</p>',
+      title: '',
+      content: '',
       language: 'en',
       updated_at: new Date().toISOString()
     };
@@ -482,8 +482,8 @@ function App() {
       const placeholder: Note = {
         id: crypto.randomUUID(),
         student: trimmed,
-        title: 'Untitled note',
-        content: '<p>Write your reflection here…</p>',
+        title: '',
+        content: '',
         language: 'en',
         updated_at: new Date().toISOString()
       };
@@ -534,6 +534,25 @@ function App() {
     const editor = editorRef.current;
     if (!editor) return;
     restoreSelection();
+    
+    if (command === 'highlight') {
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0 || sel.isCollapsed) { editor.focus(); return; }
+      const range = sel.getRangeAt(0);
+      const span = document.createElement('span');
+      span.style.backgroundColor = '#f97316';
+      try {
+        range.surroundContents(span);
+      } catch {
+        const contents = range.extractContents();
+        span.appendChild(contents);
+        range.insertNode(span);
+      }
+      updateNote('content', editor.innerHTML);
+      saveSelection();
+      return;
+    }
+
     const before = editor.innerHTML;
     const ok = document.execCommand(command, false, value);
     if (ok && editor.innerHTML !== before) {
@@ -541,13 +560,11 @@ function App() {
       saveSelection();
       return;
     }
-    // Fallback: apply style programmatically (execCommand can silently no-op)
     const sel = window.getSelection();
     if (!sel || sel.rangeCount === 0 || sel.isCollapsed) { editor.focus(); return; }
     const range = sel.getRangeAt(0);
     const styles: Record<string, [string, string]> = {
       bold: ['fontWeight', 'bold'],
-      italic: ['fontStyle', 'italic'],
       underline: ['textDecorationLine', 'underline'],
     };
     const st = styles[command];
@@ -903,7 +920,7 @@ function App() {
           >
             <button type="button" className={`toolbar-btn ${fmtState.bold ? 'active' : ''}`} onClick={() => formatText('bold')} title="Bold"><Bold size={20} /></button>
             <button type="button" className={`toolbar-btn ${fmtState.underline ? 'active' : ''}`} onClick={() => formatText('underline')} title="Underline"><Underline size={20} /></button>
-            <button type="button" className="toolbar-btn" onClick={() => formatText('italic')} title="Italic"><Italic size={20} /></button>
+            <button type="button" className="toolbar-btn" onClick={() => formatText('highlight')} title="Highlight"><Highlighter size={20} /></button>
             <span className="toolbar-divider" />
             <button type="button" className="toolbar-btn" onClick={() => changeFontSize(-1)} title="Decrease font size"><span className="fs-symbol fs-down">A−</span></button>
             <button type="button" className="toolbar-btn" onClick={() => changeFontSize(1)} title="Increase font size"><span className="fs-symbol fs-up">A+</span></button>
