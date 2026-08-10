@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Moon, Search, SunMedium, Plus, Bold, Underline, ArrowLeft, Edit2, Trash2, ChevronRight, Palette, Copy, Check, Highlighter } from 'lucide-react';
+import { BookOpen, Moon, Search, SunMedium, Plus, Bold, Underline, ArrowLeft, Edit2, Trash2, ChevronRight, Palette, Copy, Check, Highlighter, RotateCw } from 'lucide-react';
 import { createClient, RealtimeChannel } from '@supabase/supabase-js';
 
 type Note = {
@@ -295,6 +295,43 @@ function App() {
     return saved ? JSON.parse(saved) : {};
   });
   const [colorPickerFor, setColorPickerFor] = useState<string | null>(null);
+  const [isLandscape, setIsLandscape] = useState(false);
+
+  useEffect(() => {
+    const checkOrientation = () => {
+      if (window.screen && window.screen.orientation) {
+        setIsLandscape(window.screen.orientation.type.includes('landscape'));
+      } else {
+        setIsLandscape(window.innerWidth > window.innerHeight);
+      }
+    };
+    checkOrientation();
+    window.addEventListener('orientationchange', checkOrientation);
+    window.addEventListener('resize', checkOrientation);
+    return () => {
+      window.removeEventListener('orientationchange', checkOrientation);
+      window.removeEventListener('resize', checkOrientation);
+    };
+  }, []);
+
+  const toggleOrientation = useCallback(() => {
+    if (window.screen && window.screen.orientation && window.screen.orientation.lock) {
+      if (isLandscape) {
+        window.screen.orientation.unlock();
+      } else {
+        window.screen.orientation.lock('landscape').catch(() => {
+          // Fallback for devices that don't support orientation lock
+          document.body.style.transform = 'rotate(90deg)';
+          document.body.style.width = '100vh';
+          document.body.style.height = '100vw';
+          document.body.style.position = 'absolute';
+          document.body.style.top = '0';
+          document.body.style.left = '0';
+        });
+      }
+    }
+    setIsLandscape(!isLandscape);
+  }, [isLandscape]);
 
   useEffect(() => {
     const handler = setTimeout(() => setDebouncedSearch(search), 200);
@@ -933,6 +970,9 @@ function App() {
           <h1>Students</h1>
         </div>
         <div className="topbar-actions">
+          <button className="icon-btn" onClick={toggleOrientation} title={isLandscape ? 'Switch to portrait' : 'Switch to landscape'} aria-label="Toggle orientation">
+            <RotateCw size={20} style={{ transform: isLandscape ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.3s ease' }} />
+          </button>
           <button className="icon-btn" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} title="Toggle theme" aria-label="Toggle theme">
             {theme === 'dark' ? <SunMedium size={20} /> : <Moon size={20} />}
           </button>
