@@ -359,7 +359,7 @@ button, input, select { font: inherit; }
 }
 
 /* Landscape/Horizontal orientation optimizations */
-@media (max-height: 600px) and (orientation: landscape) {
+@media (orientation: landscape) and (max-height: 700px) {
   .topbar, .reading-topbar, .editing-topbar {
     padding: 0.4rem 1rem;
   }
@@ -449,6 +449,45 @@ button, input, select { font: inherit; }
   }
   .search-box input {
     font-size: 0.8rem;
+  }
+}
+
+/* Wide landscape - tablets and larger devices in landscape */
+@media (orientation: landscape) and (min-width: 768px) {
+  .students-layout {
+    flex-direction: row !important;
+  }
+  .sidebar-full {
+    flex: 0 0 320px;
+    max-width: 320px;
+    border-right: 1px solid var(--border);
+  }
+  .students-hero {
+    display: flex !important;
+    flex: 1;
+    padding: 2rem;
+    align-items: center;
+  }
+  .students-layout.notes-view {
+    flex-direction: column !important;
+  }
+  .students-layout.notes-view .sidebar-full {
+    flex: 1;
+    max-width: none;
+    border-right: none;
+  }
+  .students-layout.notes-view .note-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 1rem;
+  }
+  .reading-content, .editor-form-full {
+    max-width: 900px;
+    padding: 2rem;
+  }
+  .app-shell {
+    max-width: 1400px;
+    margin: 0 auto;
   }
 }
 
