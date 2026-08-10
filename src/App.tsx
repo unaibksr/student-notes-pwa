@@ -301,7 +301,6 @@ function App() {
     const checkOrientation = () => {
       const landscape = window.innerWidth > window.innerHeight;
       setIsLandscape(landscape);
-      document.body.dataset.orientation = landscape ? 'landscape' : 'portrait';
     };
     checkOrientation();
     window.addEventListener('orientationchange', checkOrientation);
@@ -313,15 +312,35 @@ function App() {
   }, []);
 
   const toggleOrientation = useCallback(() => {
-    // On mobile devices, try to use the Screen Orientation API
-    if (window.screen && window.screen.orientation) {
-      if (window.screen.orientation.type.includes('landscape')) {
-        window.screen.orientation.lock('portrait').catch(() => {});
-      } else {
-        window.screen.orientation.lock('landscape').catch(() => {});
-      }
+    const newLandscape = !isLandscape;
+    setIsLandscape(newLandscape);
+    
+    // Rotate the app container visually
+    const root = document.getElementById('root');
+    if (!root) return;
+    
+    if (newLandscape) {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+      root.style.transform = 'rotate(90deg)';
+      root.style.transformOrigin = 'bottom left';
+      root.style.width = `${height}px`;
+      root.style.height = `${width}px`;
+      root.style.position = 'fixed';
+      root.style.top = `-${height}px`;
+      root.style.left = '0';
+      root.style.zIndex = '9999';
+    } else {
+      root.style.transform = '';
+      root.style.transformOrigin = '';
+      root.style.width = '';
+      root.style.height = '';
+      root.style.position = '';
+      root.style.top = '';
+      root.style.left = '';
+      root.style.zIndex = '';
     }
-  }, []);
+  }, [isLandscape]);
 
   useEffect(() => {
     const handler = setTimeout(() => setDebouncedSearch(search), 200);
