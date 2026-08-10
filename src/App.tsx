@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, Moon, Search, SunMedium, Plus, Bold, Underline, ArrowLeft, Edit2, Trash2, ChevronRight, Palette, Copy, Check, Highlighter, RotateCw } from 'lucide-react';
+import { BookOpen, Moon, Search, SunMedium, Plus, Bold, Underline, ArrowLeft, Edit2, Trash2, ChevronRight, Palette, Copy, Check, Highlighter } from 'lucide-react';
 import { createClient, RealtimeChannel } from '@supabase/supabase-js';
 
 type Note = {
@@ -34,6 +34,17 @@ const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = (SUPABASE_URL && SUPABASE_ANON_KEY) ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
 const stripHtml = (html: string) => html.replace(/<[^>]*>/g, '');
+
+const normalizeNote = (note: Partial<Note>): Note => ({
+  id: note.id || crypto.randomUUID(),
+  student: note.student || '',
+  title: note.title || '',
+  content: note.content || '',
+  language: note.language === 'ur' ? 'ur' : 'en',
+  updated_at: note.updated_at || new Date().toISOString(),
+  tags: Array.isArray(note.tags) ? note.tags.filter((tag): tag is string => typeof tag === 'string') : [],
+  archived: note.archived === true,
+});
 
 const FONT_LEVELS = [12, 14, 16, 20, 26];
 
@@ -143,9 +154,12 @@ const timeAgo = (iso: string): string => {
 let supabaseSeeded = false;
 
 type SyncOperation = {
-  type: 'upsert' | 'delete';
+  type: 'upsert' | 'delete' | 'renameStudent' | 'deleteStudent';
   note?: Note;
   id?: string;
+  from?: string;
+  to?: string;
+  student?: string;
   timestamp: number;
 };
 
@@ -158,9 +172,30 @@ const getSyncQueue = (): SyncOperation[] => {
   }
 };
 
+const notePayload = (note: Note) => ({
+  id: note.id,
+  student: note.student,
+  title: note.title,
+  content: note.content,
+  language: note.language,
+  updated_at: note.updated_at,
+});
+
+let syncPromise: Promise<void> | null = null;
+
 const addToSyncQueue = (operation: SyncOperation) => {
   const queue = getSyncQueue();
-  queue.push(operation);
+  const existingIndex = operation.type === 'upsert' && operation.note
+    ? queue.findIndex(item => item.type === 'upsert' && item.note?.id === operation.note?.id)
+    : operation.type === 'delete' && operation.id
+      ? queue.findIndex(item => item.type === 'delete' && item.id === operation.id)
+      : operation.type === 'renameStudent' && operation.from
+        ? queue.findIndex(item => item.type === 'renameStudent' && item.from === operation.from)
+        : operation.type === 'deleteStudent' && operation.student
+          ? queue.findIndex(item => item.type === 'deleteStudent' && item.student === operation.student)
+      : -1;
+  if (existingIndex >= 0) queue[existingIndex] = operation;
+  else queue.push(operation);
   localStorage.setItem(SYNC_QUEUE_KEY, JSON.stringify(queue));
   processSyncQueue();
 };
@@ -173,34 +208,36 @@ const removeFromQueue = (index: number) => {
 
 const processSyncQueue = async () => {
   if (!supabase || !navigator.onLine) return;
+  if (syncPromise) return syncPromise;
   
-  const queue = getSyncQueue();
-  if (queue.length === 0) return;
-
-  for (let i = 0; i < queue.length; i++) {
-    const operation = queue[i];
-    try {
-      if (operation.type === 'upsert' && operation.note) {
-        await supabase.from('notes').upsert({
-          id: operation.note.id,
-          student: operation.note.student,
-          title: operation.note.title,
-          content: operation.note.content,
-          language: operation.note.language,
-          updated_at: operation.note.updated_at,
-        });
-        removeFromQueue(i);
+  syncPromise = (async () => {
+    const queue = getSyncQueue();
+    for (let i = 0; i < queue.length; i++) {
+      const operation = queue[i];
+      try {
+        if (operation.type === 'upsert' && operation.note) {
+          const { error } = await supabase.from('notes').upsert(notePayload(operation.note));
+          if (error) throw error;
+        } else if (operation.type === 'delete' && operation.id) {
+          const { error } = await supabase.from('notes').delete().eq('id', operation.id);
+          if (error) throw error;
+        } else if (operation.type === 'renameStudent' && operation.from && operation.to) {
+          const { error } = await supabase.from('notes').update({ student: operation.to }).eq('student', operation.from);
+          if (error) throw error;
+        } else if (operation.type === 'deleteStudent' && operation.student) {
+          const { error } = await supabase.from('notes').delete().eq('student', operation.student);
+          if (error) throw error;
+        }
+        removeFromQueue(0);
+        queue.shift();
         i--;
-      } else if (operation.type === 'delete' && operation.id) {
-        await supabase.from('notes').delete().eq('id', operation.id);
-        removeFromQueue(i);
-        i--;
+      } catch (error) {
+        console.error('Sync failed for operation:', error);
+        break;
       }
-    } catch (error) {
-      console.error('Sync failed for operation:', error);
-      break;
     }
-  }
+  })().finally(() => { syncPromise = null; });
+  return syncPromise;
 };
 
 const syncUpsert = (note: Note) => {
@@ -211,14 +248,8 @@ const syncUpsert = (note: Note) => {
   }
   (async () => {
     try { 
-      await supabase.from('notes').upsert({
-        id: note.id, 
-        student: note.student, 
-        title: note.title,
-        content: note.content, 
-        language: note.language, 
-        updated_at: note.updated_at,
-      }); 
+      const { error } = await supabase.from('notes').upsert(notePayload(note));
+      if (error) throw error;
     } catch { 
       addToSyncQueue({ type: 'upsert', note, timestamp: Date.now() });
     }
@@ -233,7 +264,8 @@ const syncDelete = (id: string) => {
   }
   (async () => {
     try { 
-      await supabase.from('notes').delete().eq('id', id); 
+      const { error } = await supabase.from('notes').delete().eq('id', id);
+      if (error) throw error;
     } catch { 
       addToSyncQueue({ type: 'delete', id, timestamp: Date.now() });
     }
@@ -241,14 +273,32 @@ const syncDelete = (id: string) => {
 };
 const syncRenameStudent = (from: string, to: string) => {
   if (!supabase) return;
+  if (!navigator.onLine) {
+    addToSyncQueue({ type: 'renameStudent', from, to, timestamp: Date.now() });
+    return;
+  }
   (async () => {
-    try { await supabase.from('notes').update({ student: to }).eq('student', from); } catch { /* ignore */ }
+    try {
+      const { error } = await supabase.from('notes').update({ student: to }).eq('student', from);
+      if (error) throw error;
+    } catch {
+      addToSyncQueue({ type: 'renameStudent', from, to, timestamp: Date.now() });
+    }
   })();
 };
 const syncDeleteStudent = (name: string) => {
   if (!supabase) return;
+  if (!navigator.onLine) {
+    addToSyncQueue({ type: 'deleteStudent', student: name, timestamp: Date.now() });
+    return;
+  }
   (async () => {
-    try { await supabase.from('notes').delete().eq('student', name); } catch { /* ignore */ }
+    try {
+      const { error } = await supabase.from('notes').delete().eq('student', name);
+      if (error) throw error;
+    } catch {
+      addToSyncQueue({ type: 'deleteStudent', student: name, timestamp: Date.now() });
+    }
   })();
 };
 
@@ -267,8 +317,14 @@ const syncCancelPending = (id: string) => {
 
 function App() {
   const [notes, setNotes] = useState<Note[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    return saved ? JSON.parse(saved) : SAMPLE_NOTES;
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (!saved) return SAMPLE_NOTES;
+      const parsed = JSON.parse(saved);
+      return Array.isArray(parsed) ? parsed.map(normalizeNote) : SAMPLE_NOTES;
+    } catch {
+      return SAMPLE_NOTES;
+    }
   });
   const [search, setSearch] = useState('');
   const [activeStudent, setActiveStudent] = useState<string | null>(null);
@@ -295,53 +351,6 @@ function App() {
     return saved ? JSON.parse(saved) : {};
   });
   const [colorPickerFor, setColorPickerFor] = useState<string | null>(null);
-  const [isLandscape, setIsLandscape] = useState(false);
-
-  useEffect(() => {
-    const checkOrientation = () => {
-      const landscape = window.innerWidth > window.innerHeight;
-      setIsLandscape(landscape);
-    };
-    checkOrientation();
-    window.addEventListener('orientationchange', checkOrientation);
-    window.addEventListener('resize', checkOrientation);
-    return () => {
-      window.removeEventListener('orientationchange', checkOrientation);
-      window.removeEventListener('resize', checkOrientation);
-    };
-  }, []);
-
-  const toggleOrientation = useCallback(() => {
-    const newLandscape = !isLandscape;
-    setIsLandscape(newLandscape);
-    
-    // Rotate the app container visually
-    const root = document.getElementById('root');
-    if (!root) return;
-    
-    if (newLandscape) {
-      const width = window.innerWidth;
-      const height = window.innerHeight;
-      root.style.transform = 'rotate(90deg)';
-      root.style.transformOrigin = 'bottom left';
-      root.style.width = `${height}px`;
-      root.style.height = `${width}px`;
-      root.style.position = 'fixed';
-      root.style.top = `-${height}px`;
-      root.style.left = '0';
-      root.style.zIndex = '9999';
-    } else {
-      root.style.transform = '';
-      root.style.transformOrigin = '';
-      root.style.width = '';
-      root.style.height = '';
-      root.style.position = '';
-      root.style.top = '';
-      root.style.left = '';
-      root.style.zIndex = '';
-    }
-  }, [isLandscape]);
-
   useEffect(() => {
     const handler = setTimeout(() => setDebouncedSearch(search), 200);
     return () => clearTimeout(handler);
@@ -486,10 +495,10 @@ function App() {
   const fetchLatestNotes = useCallback(async () => {
     if (!supabase) return;
     try {
-      const { data } = await supabase.from('notes').select('*').order('updated_at', { ascending: false });
-      if (data && data.length > 0) {
-        setNotes(data as Note[]);
-      }
+      await processSyncQueue();
+      const { data, error } = await supabase.from('notes').select('*').order('updated_at', { ascending: false });
+      if (error) throw error;
+      if (data) setNotes(data.map(normalizeNote));
     } catch (error) {
       console.error('Failed to fetch latest notes:', error);
     }
@@ -501,11 +510,11 @@ function App() {
     channelRef.current = channel;
     channel.on('postgres_changes', { event: '*', schema: 'public', table: 'notes' }, (payload) => {
       if (payload.eventType === 'INSERT' && payload.new) {
-        const newNote = payload.new as Note;
+        const newNote = normalizeNote(payload.new as Partial<Note>);
         setNotes(prev => prev.some(item => item.id === newNote.id) ? prev : [newNote, ...prev]);
       }
       if (payload.eventType === 'UPDATE' && payload.new) {
-        const updatedNote = payload.new as Note;
+        const updatedNote = normalizeNote(payload.new as Partial<Note>);
         setNotes(prev => prev.map(item => item.id === updatedNote.id ? updatedNote : item));
       }
       if (payload.eventType === 'DELETE' && payload.old) {
@@ -519,21 +528,23 @@ function App() {
   useEffect(() => {
     if (!supabase) return;
     let cancelled = false;
-    
+
     const fetchAndSeed = async () => {
       try {
-        const { data } = await supabase.from('notes').select('*').order('updated_at', { ascending: false });
+        await processSyncQueue();
+        const { data, error } = await supabase.from('notes').select('*').order('updated_at', { ascending: false });
+        if (error) throw error;
         if (cancelled) return;
-        
+
         if (data && data.length > 0) {
-          setNotes(data as Note[]);
+          setNotes(data.map(normalizeNote));
         } else if (!supabaseSeeded) {
           supabaseSeeded = true;
           const { data: existing } = await supabase.from('notes').select('student');
           const existingStudents = new Set((existing || []).map((n: { student: string }) => n.student));
           let raw = localStorage.getItem(STORAGE_KEY);
           let local: Note[] = [];
-          try { local = raw ? JSON.parse(raw) : []; } catch { local = []; }
+          try { local = raw ? JSON.parse(raw).map(normalizeNote) : []; } catch { local = []; }
           if (!Array.isArray(local)) local = [];
           for (const n of local) {
             if (!existingStudents.has(n.student)) {
@@ -979,9 +990,6 @@ function App() {
           <h1>Students</h1>
         </div>
         <div className="topbar-actions">
-          <button className="icon-btn" onClick={toggleOrientation} title={isLandscape ? 'Switch to portrait' : 'Switch to landscape'} aria-label="Toggle orientation">
-            <RotateCw size={20} style={{ transform: isLandscape ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.3s ease' }} />
-          </button>
           <button className="icon-btn" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} title="Toggle theme" aria-label="Toggle theme">
             {theme === 'dark' ? <SunMedium size={20} /> : <Moon size={20} />}
           </button>
