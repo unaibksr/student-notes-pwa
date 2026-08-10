@@ -526,7 +526,15 @@ function App() {
 
   useEffect(() => {
     if (editorRef.current && activeNote) {
-      editorRef.current.innerHTML = activeNote.content;
+      const editor = editorRef.current;
+      let content = activeNote.content;
+      
+      // Auto-wrap Urdu content in Noto Nastaliq span if not already wrapped
+      if (activeNote.language === 'ur' && !content.includes("font-family: 'Noto Nastaliq Urdu'")) {
+        content = `<span style="font-family: 'Noto Nastaliq Urdu', serif;">${content}</span>`;
+      }
+      
+      editor.innerHTML = content;
     }
   }, [activeNote?.id, appView]);
 
@@ -889,10 +897,23 @@ function App() {
     const editor = editorRef.current;
     if (!editor) return;
     const text = e.clipboardData.getData('text/plain');
-    if (!text || !detectMarkdown(text)) return;
+    if (!text) return;
+    
     e.preventDefault();
     restoreSelection();
-    const html = markdownToHtml(text);
+    
+    let html: string;
+    if (detectMarkdown(text)) {
+      html = markdownToHtml(text);
+    } else {
+      html = escapeHtml(text).replace(/\n/g, '<br />');
+    }
+    
+    // Wrap in Noto Nastaliq span if Urdu text detected
+    if (detectLanguage(text) === 'ur') {
+      html = `<span style="font-family: 'Noto Nastaliq Urdu', serif;">${html}</span>`;
+    }
+    
     document.execCommand('insertHTML', false, html);
     updateNote('content', editor.innerHTML);
     saveSelection();
